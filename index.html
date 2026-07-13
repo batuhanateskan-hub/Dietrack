@@ -208,11 +208,20 @@
           </div>
         </div>
 
+        <!-- Chart date-range selector -->
+        <div id="range-selector" class="grid grid-cols-4 gap-1 rounded-2xl border border-white/[0.06] bg-surface p-1"
+             role="group" aria-label="Chart date range">
+          <button data-range="7"   class="range-btn rounded-xl py-2 text-[12px] font-semibold text-mute transition active:scale-[0.97]">7 Days</button>
+          <button data-range="14"  class="range-btn rounded-xl py-2 text-[12px] font-semibold text-mute transition active:scale-[0.97]">14 Days</button>
+          <button data-range="30"  class="range-btn rounded-xl py-2 text-[12px] font-semibold text-mute transition active:scale-[0.97]">30 Days</button>
+          <button data-range="all" class="range-btn rounded-xl py-2 text-[12px] font-semibold text-mute transition active:scale-[0.97]">All Time</button>
+        </div>
+
         <!-- Weight trend chart -->
         <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
           <div class="mb-3 flex items-baseline justify-between">
             <h3 class="text-[15px] font-semibold">Weight trend</h3>
-            <span id="weight-chart-sub" class="text-[12px] text-mute">last 30 entries</span>
+            <span id="weight-chart-sub" class="text-[12px] text-mute">last 14 days</span>
           </div>
           <div class="relative h-48"><canvas id="chart-weight"></canvas></div>
           <p id="weight-empty" class="hidden py-6 text-center text-[13px] text-mute">
@@ -223,7 +232,7 @@
         <!-- Calories chart -->
         <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
           <div class="mb-3 flex items-baseline justify-between">
-            <h3 class="text-[15px] font-semibold">Calories · last 14 days</h3>
+            <h3 class="text-[15px] font-semibold">Calories <span id="kcal-chart-range" class="font-normal text-mute">· last 14 days</span></h3>
             <span id="kcal-chart-sub" class="text-[12px] text-mute"></span>
           </div>
           <div class="relative h-48"><canvas id="chart-kcal"></canvas></div>
@@ -437,6 +446,7 @@ const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietra
 const DEFAULT_SETTINGS = {
   apiKey: '', model: 'llama-3.1-8b-instant', name: '',
   calorieGoal: 2000, waterGoal: 2500, targetWeight: null,
+  chartRange: 14, // 7 | 14 | 30 | 'all' — a pure view preference for the dashboard charts
 };
 
 /* Models this build supports on the Groq API. Anything else found in
@@ -750,28 +760,51 @@ const tooltipStyle = {
   displayColors: false,
 };
 
-let weightChart = null, kcalChart = null;
+let weightTrendChart = null, calorieChart = null;
+
+/* ── Date-range selector state ─────────────────────────────────────────────
+   A pure VIEW filter: it only decides which existing records the charts
+   render. It never deletes, rewrites, or touches the day records themselves —
+   'days' in LocalStorage is only read here, never written. */
+const RANGE_OPTIONS = [7, 14, 30, 'all'];
+let chartRange = RANGE_OPTIONS.includes(settings.chartRange) ? settings.chartRange : 14;
+
+/* First day key (inclusive) of the active range, or null for All Time. */
+function rangeStartKey() {
+  if (chartRange === 'all') return null;
+  const d = new Date();
+  d.setDate(d.getDate() - (chartRange - 1));
+  return todayKey(d);
+}
+
+const rangeLabel = () => chartRange === 'all' ? 'all time' : `last ${chartRange} days`;
 
 function weightSeries() {
+  const start = rangeStartKey();
   return sortedDayKeys()
-    .filter(k => days[k].weight != null)
-    .slice(-30)
+    .filter(k => days[k].weight != null && (start === null || k >= start))
     .map(k => ({ label: fmtDay(k), value: days[k].weight }));
 }
 
 function kcalSeries() {
+  // Continuous day axis from the range start (or the first record ever,
+  // for All Time) through today, so gaps in logging stay honest.
+  const keys = sortedDayKeys();
+  const startKey = rangeStartKey() ?? keys[0] ?? todayKey();
+  const [y, m, d] = startKey.split('-').map(Number);
+  const cursor = new Date(y, m - 1, d);
+  const end = todayKey();
   const out = [];
-  const now = new Date();
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(now); d.setDate(now.getDate() - i);
-    const k = todayKey(d);
-    out.push({ label: fmtDay(k, { day: 'numeric' }), value: days[k]?.calories_consumed ?? null });
+  const short = chartRange === 7 || chartRange === 14; // bare day numbers read fine within two weeks
+  for (let k = todayKey(cursor); k <= end; cursor.setDate(cursor.getDate() + 1), k = todayKey(cursor)) {
+    out.push({ label: fmtDay(k, short ? { day: 'numeric' } : { month: 'short', day: 'numeric' }),
+               value: days[k]?.calories_consumed ?? null });
   }
   return out;
 }
 
 function buildCharts() {
-  weightChart = new Chart(document.getElementById('chart-weight'), {
+  weightTrendChart = new Chart(document.getElementById('chart-weight'), {
     type: 'line',
     data: { labels: [], datasets: [{
       data: [],
@@ -802,7 +835,7 @@ function buildCharts() {
     },
   });
 
-  kcalChart = new Chart(document.getElementById('chart-kcal'), {
+  calorieChart = new Chart(document.getElementById('chart-kcal'), {
     type: 'bar',
     data: { labels: [], datasets: [{
       data: [],
@@ -878,24 +911,48 @@ function renderDashboard() {
   document.getElementById('kpi-water-sub').textContent =
     water >= wGoal ? '💪 goal reached!' : `of ${wGoal.toLocaleString()} ml goal`;
 
-  /* charts */
-  if (!weightChart) buildCharts();
+  /* charts — re-filtered from LocalStorage for the active date range */
+  if (!weightTrendChart) buildCharts();
+  updateRangeButtons();
+  document.getElementById('weight-chart-sub').textContent = rangeLabel();
+  document.getElementById('kcal-chart-range').textContent = '· ' + rangeLabel();
 
   const ws = weightSeries();
   document.getElementById('weight-empty').classList.toggle('hidden', ws.length > 0);
   document.getElementById('chart-weight').parentElement.classList.toggle('hidden', ws.length === 0);
-  weightChart.data.labels = ws.map(p => p.label);
-  weightChart.data.datasets[0].data = ws.map(p => p.value);
-  weightChart.update('none');
+  weightTrendChart.data.labels = ws.map(p => p.label);
+  weightTrendChart.data.datasets[0].data = ws.map(p => p.value);
+  weightTrendChart.update();
 
   const ks = kcalSeries();
   const hasKcal = ks.some(p => p.value != null);
   document.getElementById('kcal-empty').classList.toggle('hidden', hasKcal);
   document.getElementById('chart-kcal').parentElement.classList.toggle('hidden', !hasKcal);
-  kcalChart.data.labels = ks.map(p => p.label);
-  kcalChart.data.datasets[0].data = ks.map(p => p.value);
-  kcalChart.update('none');
+  calorieChart.data.labels = ks.map(p => p.label);
+  calorieChart.data.datasets[0].data = ks.map(p => p.value);
+  calorieChart.update();
 }
+
+/* ── Range selector wiring ── */
+function updateRangeButtons() {
+  document.querySelectorAll('.range-btn').forEach(b => {
+    const active = String(chartRange) === b.dataset.range;
+    b.classList.toggle('bg-brand', active);
+    b.classList.toggle('text-white', active);
+    b.classList.toggle('text-mute', !active);
+  });
+}
+
+document.getElementById('range-selector').addEventListener('click', e => {
+  const btn = e.target.closest('.range-btn');
+  if (!btn) return;
+  const value = btn.dataset.range === 'all' ? 'all' : Number(btn.dataset.range);
+  if (value === chartRange) return;
+  chartRange = value;
+  settings.chartRange = value; // persist the preference (view state only — day records untouched)
+  persistSettings();
+  renderDashboard();           // re-filters from LocalStorage and chart.update()s in place
+});
 
 /* ════════════════════════════════════════════════════════════════════════
    6 · METRICS & HISTORY

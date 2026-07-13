@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0d0d0d" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="description" content="DieTrack — AI-powered diet & progress tracker with a Gemini diet coach." />
+  <meta name="description" content="DieTrack — AI-powered diet & progress tracker with a Groq diet coach." />
   <title>DieTrack · AI Diet Coach</title>
 
   <!-- Tailwind CSS (CDN) -->
@@ -133,7 +133,7 @@
     <section id="screen-chat" class="screen active">
       <div id="key-banner" class="hidden border-b border-kcal/30 bg-kcal/10 px-4 py-2.5 text-[13px] text-[#f0c674]">
         🔑 No API key set.
-        <button class="font-semibold underline underline-offset-2" onclick="openSettings()">Add your Gemini key</button>
+        <button class="font-semibold underline underline-offset-2" onclick="openSettings()">Add your Groq key</button>
         to start chatting.
       </div>
 
@@ -358,23 +358,22 @@
       <div class="space-y-3 rounded-2xl bg-raise p-4">
         <h3 class="text-[13px] font-semibold uppercase tracking-wide text-mute">AI Configuration</h3>
         <label class="block">
-          <span class="mb-1 block text-[13px] text-ink2">Gemini API key</span>
+          <span class="mb-1 block text-[13px] text-ink2">Groq API key</span>
           <div class="flex gap-2">
-            <input type="password" id="s-apikey" class="field flex-1" placeholder="AIza…" autocomplete="off" />
+            <input type="password" id="s-apikey" class="field flex-1" placeholder="gsk_…" autocomplete="off" />
             <button type="button" id="s-apikey-toggle" class="field !w-12 shrink-0 text-center" aria-label="Show key">👁</button>
           </div>
           <span class="mt-1 block text-[11px] text-mute">
             Stored only in this browser (LocalStorage). Get a free key at
-            <span class="text-brand">aistudio.google.com</span>.
+            <span class="text-brand">console.groq.com</span>.
           </span>
         </label>
         <label class="block">
           <span class="mb-1 block text-[13px] text-ink2">Model</span>
           <select id="s-model" class="field">
-            <option value="gemini-1.5-flash">gemini-1.5-flash (recommended)</option>
-            <option value="gemini-1.5-flash-8b">gemini-1.5-flash-8b</option>
-            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+            <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (recommended)</option>
+            <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+            <option value="openai/gpt-oss-20b">openai/gpt-oss-20b</option>
           </select>
         </label>
       </div>
@@ -436,14 +435,15 @@
 const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietrack_chat' };
 
 const DEFAULT_SETTINGS = {
-  apiKey: '', model: 'gemini-1.5-flash', name: '',
+  apiKey: '', model: 'llama-3.1-8b-instant', name: '',
   calorieGoal: 2000, waterGoal: 2500, targetWeight: null,
 };
 
-/* Models this build knows are valid on the v1beta endpoint. Anything else
-   found in LocalStorage (e.g. 'gemini-2.5-flash' from an older build) is
-   force-migrated back to the default on load. */
-const KNOWN_MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-2.0-flash'];
+/* Models this build supports on the Groq API. Anything else found in
+   LocalStorage — deprecated names from previous builds ('gemini-2.5-flash',
+   'gemini-1.5-flash', 'llama3-8b-8192', …) — is force-migrated back to the
+   default on load to prevent client-side storage collisions. */
+const KNOWN_MODELS = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'];
 
 function loadJSON(key, fallback) {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
@@ -453,9 +453,10 @@ const saveJSON = (key, val) => localStorage.setItem(key, JSON.stringify(val));
 
 let settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS.settings, {}) };
 
-/* Force-clear stale model names cached by previous builds. */
+/* Force-clear stale model names cached by previous builds
+   (e.g. 'gemini-2.5-flash', 'gemini-1.5-flash', 'llama3-8b-8192'). */
 if (!KNOWN_MODELS.includes(settings.model)) {
-  settings.model = 'gemini-1.5-flash';
+  settings.model = 'llama-3.1-8b-instant';
   saveJSON(LS.settings, settings);
 }
 let days     = loadJSON(LS.days, {});   // { 'YYYY-MM-DD': { weight, calories_consumed, water_intake_ml, notes, waist… } }
@@ -532,7 +533,7 @@ function processDataBlocks(raw) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   3 · GEMINI API  — key comes from settings, never hardcoded
+   3 · GROQ API (OpenAI-compatible)  — key comes from settings, never hardcoded
    ════════════════════════════════════════════════════════════════════════ */
 function buildSystemPrompt() {
   const t = days[todayKey()] || {};
@@ -571,24 +572,28 @@ Context:
 ${recent || '- none yet'}`;
 }
 
-async function callGemini(history) {
-  // v1beta endpoint, e.g.:
-  // https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=YOUR_API_KEY
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(settings.apiKey)}`;
-  // No root-level system_instruction / systemInstruction field — some API
-  // configurations reject it ("Unknown name systemInstruction"). The coach
-  // rules are injected as the first turn of the conversation instead.
+const GROQ_ENDPOINT = 'https://api.groq.com/v1/chat/completions';
+
+async function callGroq(history) {
+  // Standard OpenAI-compatible chat payload: the coach rules ride natively
+  // as the first {role:"system"} message, followed by the conversation.
+  // (Chat history is stored with role 'model' for backward compatibility
+  //  with earlier builds; it maps to OpenAI's 'assistant' on the wire.)
   const body = {
-    contents: [
-      { role: 'user',  parts: [{ text: buildSystemPrompt() }] },
-      { role: 'model', parts: [{ text: 'Understood. I am the AI Diet Coach. I will converse naturally, and whenever the user provides daily data I will silently append the :::data JSON block at the very end of my response.' }] },
-      ...history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+    model: settings.model,
+    messages: [
+      { role: 'system', content: buildSystemPrompt() },
+      ...history.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.text })),
     ],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+    temperature: 0.7,
+    max_tokens: 1024,
   };
-  const res = await fetch(url, {
+  const res = await fetch(GROQ_ENDPOINT, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': 'Bearer ' + settings.apiKey,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -597,7 +602,7 @@ async function callGemini(history) {
     throw new Error(msg);
   }
   const json = await res.json();
-  const text = json.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+  const text = json.choices?.[0]?.message?.content || '';
   if (!text) throw new Error('Empty response from the model.');
   return text;
 }
@@ -695,7 +700,7 @@ chatForm.addEventListener('submit', async e => {
   e.preventDefault();
   const text = chatInput.value.trim();
   if (!text || sending) return;
-  if (!settings.apiKey) { openSettings(); toast('Add your Gemini API key first'); return; }
+  if (!settings.apiKey) { openSettings(); toast('Add your Groq API key first'); return; }
 
   chatInput.value = ''; autoGrow();
   chat.push({ role: 'user', text, ts: Date.now() });
@@ -709,7 +714,7 @@ chatForm.addEventListener('submit', async e => {
   try {
     // send the last 30 turns of real conversation (user/model only)
     const history = chat.filter(m => m.role === 'user' || m.role === 'model').slice(-30);
-    const raw = await callGemini(history);
+    const raw = await callGroq(history);
     const { text: visible } = processDataBlocks(raw);
     hideTyping();
     const msg = { role: 'model', text: visible || '👍 Logged!', ts: Date.now() };

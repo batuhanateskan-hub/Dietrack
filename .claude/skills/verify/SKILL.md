@@ -5,7 +5,7 @@ description: How to build, run, and verify the DieTrack single-file app in this 
 
 # Verifying DieTrack (single-file `index.html`)
 
-The whole app is `index.html` (Tailwind CDN + Chart.js CDN + LocalStorage + Gemini API).
+The whole app is `index.html` (Tailwind CDN + Chart.js CDN + LocalStorage + Groq API).
 Surface is a mobile web GUI — verify by driving it with Playwright/Chromium.
 
 ## Launch
@@ -30,11 +30,12 @@ CDNs with `page.route()`:
    snippet that defines `window.tailwind = {}` and injects the compiled CSS.
 3. Fulfill `**cdn.jsdelivr.net**` with `node_modules/chart.js/dist/chart.umd.js`.
 
-## Gotcha: mock the Gemini API
+## Gotcha: mock the Groq API
 
-Route `**generativelanguage.googleapis.com**` and fulfill with
-`{ candidates: [{ content: { parts: [{ text }] } }] }`. Append a
-`:::data\n{...json...}\n:::` block to `text` to exercise the extraction engine.
+Route `**api.groq.com**` and fulfill with
+`{ choices: [{ message: { role: 'assistant', content } }] }` (errors:
+`{ error: { message } }` with a non-2xx status). Append a
+`:::data\n{...json...}\n:::` block to `content` to exercise the extraction engine.
 
 ## Flows worth driving
 

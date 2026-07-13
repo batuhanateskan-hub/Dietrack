@@ -371,8 +371,9 @@
         <label class="block">
           <span class="mb-1 block text-[13px] text-ink2">Model</span>
           <select id="s-model" class="field">
-            <option value="gemini-2.5-flash">gemini-2.5-flash (recommended)</option>
-            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="gemini-1.5-flash">gemini-1.5-flash (recommended)</option>
+            <option value="gemini-1.5-flash-8b">gemini-1.5-flash-8b</option>
+            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
             <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           </select>
         </label>
@@ -435,9 +436,14 @@
 const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietrack_chat' };
 
 const DEFAULT_SETTINGS = {
-  apiKey: '', model: 'gemini-2.5-flash', name: '',
+  apiKey: '', model: 'gemini-1.5-flash', name: '',
   calorieGoal: 2000, waterGoal: 2500, targetWeight: null,
 };
+
+/* Models this build knows are valid on the v1beta endpoint. Anything else
+   found in LocalStorage (e.g. 'gemini-2.5-flash' from an older build) is
+   force-migrated back to the default on load. */
+const KNOWN_MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-2.0-flash'];
 
 function loadJSON(key, fallback) {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
@@ -446,6 +452,12 @@ function loadJSON(key, fallback) {
 const saveJSON = (key, val) => localStorage.setItem(key, JSON.stringify(val));
 
 let settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS.settings, {}) };
+
+/* Force-clear stale model names cached by previous builds. */
+if (!KNOWN_MODELS.includes(settings.model)) {
+  settings.model = 'gemini-1.5-flash';
+  saveJSON(LS.settings, settings);
+}
 let days     = loadJSON(LS.days, {});   // { 'YYYY-MM-DD': { weight, calories_consumed, water_intake_ml, notes, waist… } }
 let chat     = loadJSON(LS.chat, []);   // [ { role: 'user'|'model'|'error', text, ts } ]
 
@@ -560,10 +572,18 @@ ${recent || '- none yet'}`;
 }
 
 async function callGemini(history) {
+  // v1beta endpoint, e.g.:
+  // https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=YOUR_API_KEY
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(settings.apiKey)}`;
+  // No root-level system_instruction / systemInstruction field — some API
+  // configurations reject it ("Unknown name systemInstruction"). The coach
+  // rules are injected as the first turn of the conversation instead.
   const body = {
-    system_instruction: { parts: [{ text: buildSystemPrompt() }] },
-    contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+    contents: [
+      { role: 'user',  parts: [{ text: buildSystemPrompt() }] },
+      { role: 'model', parts: [{ text: 'Understood. I am the AI Diet Coach. I will converse naturally, and whenever the user provides daily data I will silently append the :::data JSON block at the very end of my response.' }] },
+      ...history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+    ],
     generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
   };
   const res = await fetch(url, {

@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d0d0d" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="DieTrack — AI-powered diet & progress tracker with a Gemini diet coach." />
+  <title>DieTrack · AI Diet Coach</title>
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            page:    '#0d0d0d',   /* page plane            */
+            surface: '#1a1a19',   /* card / chart surface  */
+            raise:   '#232322',   /* raised surface        */
+            hair:    '#2c2c2a',   /* hairline / gridline   */
+            line:    '#383835',   /* baseline / borders    */
+            ink:     '#ffffff',   /* primary ink           */
+            ink2:    '#c3c2b7',   /* secondary ink         */
+            mute:    '#898781',   /* muted / axis labels   */
+            brand:   '#3987e5',   /* blue  — water, brand  */
+            kcal:    '#c98500',   /* amber — calories      */
+            mass:    '#199e70',   /* aqua  — weight        */
+            viol:    '#9085e9',   /* violet — measurements */
+            good:    '#0ca30c',
+            crit:    '#e66767',
+          },
+          fontFamily: {
+            sans: ['system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Chart.js (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; background: #0d0d0d; overscroll-behavior-y: none; }
+    * { -webkit-tap-highlight-color: transparent; }
+
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-thumb { background: #383835; border-radius: 2px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    /* Screens ------------------------------------------------------------ */
+    .screen { display: none; }
+    .screen.active { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+
+    /* Chat bubbles -------------------------------------------------------- */
+    .bubble { max-width: 85%; border-radius: 18px; padding: 10px 14px; font-size: 15px;
+              line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
+    .bubble-user { background: #1c5cab; color: #fff; border-bottom-right-radius: 6px; margin-left: auto; }
+    .bubble-ai   { background: #232322; color: #eceae2; border-bottom-left-radius: 6px; margin-right: auto;
+                   border: 1px solid rgba(255,255,255,0.06); }
+    .bubble-err  { background: rgba(230,103,103,0.12); border: 1px solid rgba(230,103,103,0.35);
+                   color: #f0a8a8; margin-right: auto; border-bottom-left-radius: 6px; }
+    .bubble b { color: #fff; }
+    .bubble code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px;
+                   font-size: 13px; font-family: ui-monospace, monospace; }
+    .msg-in { animation: msgIn .22s ease-out both; }
+    @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* Typing indicator ----------------------------------------------------- */
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #898781; display: inline-block;
+           animation: blink 1.2s infinite ease-in-out; }
+    .dot:nth-child(2) { animation-delay: .18s; }
+    .dot:nth-child(3) { animation-delay: .36s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .25; transform: translateY(0); }
+                       40% { opacity: 1; transform: translateY(-3px); } }
+
+    /* Progress bars -------------------------------------------------------- */
+    .bar-track { height: 8px; border-radius: 4px; background: #2c2c2a; overflow: hidden; }
+    .bar-fill  { height: 100%; border-radius: 4px; transition: width .5s cubic-bezier(.22,1,.36,1); }
+
+    /* Modals ---------------------------------------------------------------- */
+    .modal { position: fixed; inset: 0; z-index: 60; display: none; }
+    .modal.open { display: flex; }
+    .modal-card { animation: sheetUp .25s cubic-bezier(.22,1,.36,1) both; }
+    @keyframes sheetUp { from { transform: translateY(28px); opacity: .4; } to { transform: none; opacity: 1; } }
+
+    /* Inputs ----------------------------------------------------------------- */
+    .field { width: 100%; background: #232322; border: 1px solid #383835; border-radius: 12px;
+             color: #fff; padding: 10px 12px; font-size: 15px; outline: none; min-width: 0; }
+    .field:focus { border-color: #3987e5; }
+    .field::placeholder { color: #6b6a64; }
+    input[type='date'].field { color-scheme: dark; }
+
+    /* Toast -------------------------------------------------------------------- */
+    #toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 70;
+             transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+             transition: all .3s cubic-bezier(.22,1,.36,1); }
+    #toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+    .safe-b { padding-bottom: env(safe-area-inset-bottom); }
+  </style>
+</head>
+
+<body class="font-sans bg-page text-ink antialiased">
+<div id="app" class="mx-auto flex h-[100dvh] max-w-lg flex-col">
+
+  <!-- ══════════════ HEADER ══════════════ -->
+  <header class="sticky top-0 z-40 flex items-center justify-between border-b border-hair bg-page/90 px-4 py-3 backdrop-blur">
+    <div class="flex items-center gap-2.5">
+      <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand/15 text-lg">🥗</div>
+      <div>
+        <h1 class="text-[17px] font-bold leading-tight tracking-tight">DieTrack</h1>
+        <p id="header-sub" class="text-[11px] leading-tight text-mute">AI Diet Coach</p>
+      </div>
+    </div>
+    <button id="btn-settings" aria-label="Settings"
+            class="flex h-10 w-10 items-center justify-center rounded-full text-ink2 transition active:scale-90 active:bg-raise">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- ══════════════ MAIN ══════════════ -->
+  <main class="flex min-h-0 flex-1 flex-col">
+
+    <!-- ─────────── CHAT SCREEN ─────────── -->
+    <section id="screen-chat" class="screen active">
+      <div id="key-banner" class="hidden border-b border-kcal/30 bg-kcal/10 px-4 py-2.5 text-[13px] text-[#f0c674]">
+        🔑 No API key set.
+        <button class="font-semibold underline underline-offset-2" onclick="openSettings()">Add your Gemini key</button>
+        to start chatting.
+      </div>
+
+      <div id="chat-scroll" class="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        <!-- messages injected here -->
+      </div>
+
+      <div id="chips" class="flex gap-2 overflow-x-auto px-4 pb-2 [scrollbar-width:none]"></div>
+
+      <div class="border-t border-hair bg-page px-3 py-2.5">
+        <form id="chat-form" class="flex items-end gap-2">
+          <textarea id="chat-input" rows="1" placeholder="Message your coach…" enterkeyhint="send"
+                    class="field max-h-32 flex-1 resize-none rounded-2xl !py-2.5"></textarea>
+          <button id="chat-send" type="submit" aria-label="Send"
+                  class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand text-white transition active:scale-90 disabled:opacity-40">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/>
+            </svg>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ─────────── DASHBOARD SCREEN ─────────── -->
+    <section id="screen-dashboard" class="screen overflow-y-auto">
+      <div class="space-y-4 px-4 py-4 pb-8">
+
+        <div>
+          <h2 id="dash-greet" class="text-xl font-bold tracking-tight">Today</h2>
+          <p id="dash-date" class="text-[13px] text-mute"></p>
+        </div>
+
+        <!-- KPI: Calories -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <div class="mb-2 flex items-start justify-between">
+            <div>
+              <p class="text-[12px] font-medium uppercase tracking-wider text-mute">Today's Calories</p>
+              <p class="mt-1 text-3xl font-bold tracking-tight">
+                <span id="kpi-kcal">–</span><span class="ml-1 text-sm font-medium text-mute">kcal</span>
+              </p>
+            </div>
+            <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-kcal/15 text-lg">🔥</div>
+          </div>
+          <div class="bar-track"><div id="bar-kcal" class="bar-fill bg-kcal" style="width:0%"></div></div>
+          <p id="kpi-kcal-sub" class="mt-1.5 text-[12px] text-ink2">–</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <!-- KPI: Weight -->
+          <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+            <div class="mb-1 flex items-center justify-between">
+              <p class="text-[12px] font-medium uppercase tracking-wider text-mute">Weight</p>
+              <span class="text-base">⚖️</span>
+            </div>
+            <p class="text-2xl font-bold tracking-tight">
+              <span id="kpi-weight">–</span><span class="ml-0.5 text-xs font-medium text-mute">kg</span>
+            </p>
+            <p id="kpi-weight-sub" class="mt-1 text-[12px] text-ink2">–</p>
+          </div>
+
+          <!-- KPI: Water -->
+          <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+            <div class="mb-1 flex items-center justify-between">
+              <p class="text-[12px] font-medium uppercase tracking-wider text-mute">Water</p>
+              <span class="text-base">💧</span>
+            </div>
+            <p class="text-2xl font-bold tracking-tight">
+              <span id="kpi-water">–</span><span class="ml-0.5 text-xs font-medium text-mute">ml</span>
+            </p>
+            <div class="bar-track mt-2"><div id="bar-water" class="bar-fill bg-brand" style="width:0%"></div></div>
+            <p id="kpi-water-sub" class="mt-1.5 text-[12px] text-ink2">–</p>
+          </div>
+        </div>
+
+        <!-- Weight trend chart -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <div class="mb-3 flex items-baseline justify-between">
+            <h3 class="text-[15px] font-semibold">Weight trend</h3>
+            <span id="weight-chart-sub" class="text-[12px] text-mute">last 30 entries</span>
+          </div>
+          <div class="relative h-48"><canvas id="chart-weight"></canvas></div>
+          <p id="weight-empty" class="hidden py-6 text-center text-[13px] text-mute">
+            No weigh-ins yet — tell your coach your weight, or log it in Metrics.
+          </p>
+        </div>
+
+        <!-- Calories chart -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <div class="mb-3 flex items-baseline justify-between">
+            <h3 class="text-[15px] font-semibold">Calories · last 14 days</h3>
+            <span id="kcal-chart-sub" class="text-[12px] text-mute"></span>
+          </div>
+          <div class="relative h-48"><canvas id="chart-kcal"></canvas></div>
+          <p id="kcal-empty" class="hidden py-6 text-center text-[13px] text-mute">
+            No calorie logs yet — mention what you ate in chat and it lands here automatically.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────── METRICS & HISTORY SCREEN ─────────── -->
+    <section id="screen-metrics" class="screen overflow-y-auto">
+      <div class="space-y-4 px-4 py-4 pb-8">
+
+        <div>
+          <h2 class="text-xl font-bold tracking-tight">Metrics &amp; History</h2>
+          <p class="text-[13px] text-mute">Log measurements and edit past days.</p>
+        </div>
+
+        <!-- Entry form -->
+        <form id="metrics-form" class="space-y-3 rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[15px] font-semibold">Log an entry</h3>
+            <input type="date" id="m-date" class="field !w-auto !py-1.5 text-[13px]" required />
+          </div>
+
+          <div class="grid grid-cols-3 gap-2">
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Weight kg</span>
+              <input type="number" step="0.1" min="0" id="m-weight" class="field" placeholder="78.5" inputmode="decimal" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Kcal</span>
+              <input type="number" step="1" min="0" id="m-kcal" class="field" placeholder="1800" inputmode="numeric" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Water ml</span>
+              <input type="number" step="50" min="0" id="m-water" class="field" placeholder="2000" inputmode="numeric" />
+            </label>
+          </div>
+
+          <p class="pt-1 text-[11px] font-medium uppercase tracking-wide text-viol">Body measurements · cm</p>
+          <div class="grid grid-cols-3 gap-2">
+            <input type="number" step="0.1" min="0" id="m-waist" class="field" placeholder="Waist" inputmode="decimal" aria-label="Waist cm" />
+            <input type="number" step="0.1" min="0" id="m-hips"  class="field" placeholder="Hips"  inputmode="decimal" aria-label="Hips cm" />
+            <input type="number" step="0.1" min="0" id="m-chest" class="field" placeholder="Chest" inputmode="decimal" aria-label="Chest cm" />
+            <input type="number" step="0.1" min="0" id="m-arm"   class="field" placeholder="Arm"   inputmode="decimal" aria-label="Arm cm" />
+            <input type="number" step="0.1" min="0" id="m-thigh" class="field" placeholder="Thigh" inputmode="decimal" aria-label="Thigh cm" />
+            <input type="number" step="0.1" min="0" id="m-neck"  class="field" placeholder="Neck"  inputmode="decimal" aria-label="Neck cm" />
+          </div>
+
+          <label class="block">
+            <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Notes</span>
+            <textarea id="m-notes" rows="2" class="field resize-none" placeholder="How did the day go?"></textarea>
+          </label>
+
+          <button type="submit"
+                  class="w-full rounded-xl bg-brand py-3 text-[15px] font-semibold text-white transition active:scale-[0.98]">
+            Save entry
+          </button>
+        </form>
+
+        <!-- Latest measurements summary -->
+        <div id="meas-summary" class="hidden rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <h3 class="mb-3 text-[15px] font-semibold">Latest measurements</h3>
+          <div id="meas-grid" class="grid grid-cols-3 gap-2 text-center"></div>
+        </div>
+
+        <!-- History table -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
+          <h3 class="mb-2 text-[15px] font-semibold">History</h3>
+          <p id="hist-empty" class="py-4 text-center text-[13px] text-mute">Nothing logged yet.</p>
+          <div class="overflow-x-auto">
+            <table id="hist-table" class="hidden w-full min-w-[440px] text-left text-[13px] [font-variant-numeric:tabular-nums]">
+              <thead>
+                <tr class="border-b border-line text-[11px] uppercase tracking-wide text-mute">
+                  <th class="py-2 pr-2 font-medium">Date</th>
+                  <th class="py-2 pr-2 font-medium">Kg</th>
+                  <th class="py-2 pr-2 font-medium">Kcal</th>
+                  <th class="py-2 pr-2 font-medium">Water</th>
+                  <th class="py-2 pr-2 font-medium">Waist</th>
+                  <th class="py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody id="hist-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ══════════════ BOTTOM NAV ══════════════ -->
+  <nav class="safe-b sticky bottom-0 z-40 border-t border-hair bg-page/95 backdrop-blur">
+    <div class="grid grid-cols-3">
+      <button data-tab="chat" class="nav-btn flex flex-col items-center gap-1 py-2.5 text-brand" aria-label="Chat">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+        </svg>
+        <span class="text-[11px] font-medium">Coach</span>
+      </button>
+      <button data-tab="dashboard" class="nav-btn flex flex-col items-center gap-1 py-2.5 text-mute" aria-label="Dashboard">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+        </svg>
+        <span class="text-[11px] font-medium">Dashboard</span>
+      </button>
+      <button data-tab="metrics" class="nav-btn flex flex-col items-center gap-1 py-2.5 text-mute" aria-label="Metrics">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h16M4 18h10"/><circle cx="9" cy="6" r="1.6" fill="currentColor" stroke="none"/>
+          <circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="7" cy="18" r="1.6" fill="currentColor" stroke="none"/>
+        </svg>
+        <span class="text-[11px] font-medium">Metrics</span>
+      </button>
+    </div>
+  </nav>
+</div>
+
+<!-- ══════════════ SETTINGS MODAL ══════════════ -->
+<div id="modal-settings" class="modal items-end justify-center bg-black/60 sm:items-center" role="dialog" aria-modal="true">
+  <div class="modal-card max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl border-t border-white/10 bg-surface p-5 sm:rounded-3xl sm:border">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-bold">Settings</h2>
+      <button onclick="closeSettings()" aria-label="Close"
+              class="flex h-9 w-9 items-center justify-center rounded-full text-ink2 active:bg-raise">✕</button>
+    </div>
+
+    <div class="space-y-4">
+      <div class="space-y-3 rounded-2xl bg-raise p-4">
+        <h3 class="text-[13px] font-semibold uppercase tracking-wide text-mute">AI Configuration</h3>
+        <label class="block">
+          <span class="mb-1 block text-[13px] text-ink2">Gemini API key</span>
+          <div class="flex gap-2">
+            <input type="password" id="s-apikey" class="field flex-1" placeholder="AIza…" autocomplete="off" />
+            <button type="button" id="s-apikey-toggle" class="field !w-12 shrink-0 text-center" aria-label="Show key">👁</button>
+          </div>
+          <span class="mt-1 block text-[11px] text-mute">
+            Stored only in this browser (LocalStorage). Get a free key at
+            <span class="text-brand">aistudio.google.com</span>.
+          </span>
+        </label>
+        <label class="block">
+          <span class="mb-1 block text-[13px] text-ink2">Model</span>
+          <select id="s-model" class="field">
+            <option value="gemini-2.5-flash">gemini-2.5-flash (recommended)</option>
+            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="space-y-3 rounded-2xl bg-raise p-4">
+        <h3 class="text-[13px] font-semibold uppercase tracking-wide text-mute">Profile &amp; Goals</h3>
+        <label class="block">
+          <span class="mb-1 block text-[13px] text-ink2">Your name</span>
+          <input type="text" id="s-name" class="field" placeholder="Batuhan" />
+        </label>
+        <div class="grid grid-cols-3 gap-2">
+          <label class="block">
+            <span class="mb-1 block text-[11px] uppercase tracking-wide text-mute">Kcal goal</span>
+            <input type="number" min="0" id="s-kcal" class="field" placeholder="2000" inputmode="numeric" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] uppercase tracking-wide text-mute">Water ml</span>
+            <input type="number" min="0" id="s-water" class="field" placeholder="2500" inputmode="numeric" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] uppercase tracking-wide text-mute">Target kg</span>
+            <input type="number" step="0.1" min="0" id="s-target" class="field" placeholder="75" inputmode="decimal" />
+          </label>
+        </div>
+      </div>
+
+      <button onclick="saveSettings()"
+              class="w-full rounded-xl bg-brand py-3 text-[15px] font-semibold text-white transition active:scale-[0.98]">
+        Save settings
+      </button>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="exportData()" class="rounded-xl border border-line py-2.5 text-[13px] font-medium text-ink2 active:bg-raise">
+          ⬇ Export JSON
+        </button>
+        <button onclick="clearChat()" class="rounded-xl border border-line py-2.5 text-[13px] font-medium text-ink2 active:bg-raise">
+          🧹 Clear chat
+        </button>
+      </div>
+      <button onclick="eraseAll()" class="w-full rounded-xl border border-crit/40 py-2.5 text-[13px] font-medium text-crit active:bg-crit/10">
+        Erase all data
+      </button>
+      <p class="pb-2 text-center text-[11px] text-mute">DieTrack v1.0 · all data lives on this device</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ TOAST ══════════════ -->
+<div id="toast" class="flex items-center gap-2 rounded-full border border-white/10 bg-raise px-4 py-2 text-[13px] font-medium text-ink shadow-lg shadow-black/40">
+  <span class="text-good">✓</span><span id="toast-text">Saved</span>
+</div>
+
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════════════════════
+   1 · STORAGE LAYER  — everything persists in LocalStorage
+   ════════════════════════════════════════════════════════════════════════ */
+const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietrack_chat' };
+
+const DEFAULT_SETTINGS = {
+  apiKey: '', model: 'gemini-2.5-flash', name: '',
+  calorieGoal: 2000, waterGoal: 2500, targetWeight: null,
+};
+
+function loadJSON(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
+}
+const saveJSON = (key, val) => localStorage.setItem(key, JSON.stringify(val));
+
+let settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS.settings, {}) };
+let days     = loadJSON(LS.days, {});   // { 'YYYY-MM-DD': { weight, calories_consumed, water_intake_ml, notes, waist… } }
+let chat     = loadJSON(LS.chat, []);   // [ { role: 'user'|'model'|'error', text, ts } ]
+
+const persistSettings = () => saveJSON(LS.settings, settings);
+const persistDays     = () => saveJSON(LS.days, days);
+const persistChat     = () => saveJSON(LS.chat, chat);
+
+/* ── date helpers (local time, not UTC) ─────────────────────────────────── */
+function todayKey(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function fmtDay(key, opts = { month: 'short', day: 'numeric' }) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, opts);
+}
+const sortedDayKeys = () => Object.keys(days).sort();
+
+/* merge a partial record into one day */
+const NUM_FIELDS = ['weight', 'calories_consumed', 'water_intake_ml',
+                    'waist', 'hips', 'chest', 'arm', 'thigh', 'neck', 'body_fat'];
+
+function mergeDay(dateKey, patch) {
+  const day = days[dateKey] || {};
+  let changed = false;
+  for (const f of NUM_FIELDS) {
+    if (patch[f] !== undefined && patch[f] !== null && patch[f] !== '') {
+      const n = Number(patch[f]);
+      if (Number.isFinite(n) && n >= 0) { day[f] = n; changed = true; }
+    }
+  }
+  if (typeof patch.notes === 'string' && patch.notes.trim()) {
+    const note = patch.notes.trim();
+    day.notes = day.notes && !day.notes.includes(note) ? `${day.notes} · ${note}` : note;
+    changed = true;
+  }
+  if (changed) { days[dateKey] = day; persistDays(); }
+  return changed;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   2 · DATA EXTRACTION ENGINE  — pull :::data … ::: blocks out of AI replies
+   ════════════════════════════════════════════════════════════════════════ */
+const DATA_BLOCK_RE = /:{3}\s*data\s*([\s\S]*?):{3}/gi;
+
+/**
+ * Scans an AI reply for :::data … ::: wrapper blocks.
+ * Every block found is parsed, merged into today's record, and stripped
+ * from the visible text — the automation stays invisible in the chat UI.
+ * Returns { text, extracted }.
+ */
+function processDataBlocks(raw) {
+  let extracted = false;
+  const text = raw.replace(DATA_BLOCK_RE, (_match, payload) => {
+    // Tolerate models that wrap the JSON in a markdown code fence.
+    const cleaned = payload.replace(/```(?:json)?/gi, '').trim();
+    try {
+      const data = JSON.parse(cleaned);
+      if (data && typeof data === 'object' && mergeDay(todayKey(), data)) extracted = true;
+    } catch (err) {
+      console.warn('DieTrack: could not parse :::data block', err, cleaned);
+    }
+    return ''; // strip the block from the rendered message
+  }).replace(/\n{3,}/g, '\n\n').trim();
+
+  if (extracted) {
+    renderDashboard();
+    renderMetrics();
+    toast('Dashboard updated');
+  }
+  return { text, extracted };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   3 · GEMINI API  — key comes from settings, never hardcoded
+   ════════════════════════════════════════════════════════════════════════ */
+function buildSystemPrompt() {
+  const t = days[todayKey()] || {};
+  const recent = sortedDayKeys().slice(-7).map(k => {
+    const d = days[k];
+    const parts = [];
+    if (d.weight != null) parts.push(`weight ${d.weight}kg`);
+    if (d.calories_consumed != null) parts.push(`${d.calories_consumed}kcal`);
+    if (d.water_intake_ml != null) parts.push(`${d.water_intake_ml}ml water`);
+    if (d.waist != null) parts.push(`waist ${d.waist}cm`);
+    return `- ${k}: ${parts.join(', ') || 'no data'}`;
+  }).join('\n');
+
+  return `You are an elite AI Diet Coach. Converse naturally with the user: be warm, motivating, concise, and practical. Give evidence-based nutrition and training guidance, estimate calories for described meals, and celebrate progress. However, whenever the user provides daily data (such as weight, calories consumed, water intake, or body metrics), you must append a structured JSON object at the very end of your response inside a custom wrapper block exactly like this:
+:::data
+{
+  "weight": 78.5,
+  "calories_consumed": 1450,
+  "water_intake_ml": 2500,
+  "notes": "User reported minor bloating but high energy."
+}
+:::
+
+Rules for the data block:
+- Include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
+- calories_consumed and water_intake_ml must always be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal or drink, ADD it to the current total and output the new total.
+- Estimate calories for described meals yourself when the user doesn't give a number.
+- Output the block exactly once, at the very end, with valid JSON and no markdown fences inside it. Never mention the block or the JSON to the user — it is invisible plumbing.
+- If the message contains no loggable data, do NOT output a data block at all.
+
+Context:
+- Today's date: ${todayKey()}${settings.name ? `\n- User's name: ${settings.name}` : ''}
+- Daily goals: ${settings.calorieGoal} kcal, ${settings.waterGoal} ml water${settings.targetWeight ? `, target weight ${settings.targetWeight} kg` : ''}
+- Today so far: calories ${t.calories_consumed ?? 0} kcal, water ${t.water_intake_ml ?? 0} ml${t.weight != null ? `, weight ${t.weight} kg` : ''}
+- Last 7 logged days:
+${recent || '- none yet'}`;
+}
+
+async function callGemini(history) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(settings.apiKey)}`;
+  const body = {
+    system_instruction: { parts: [{ text: buildSystemPrompt() }] },
+    contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).error?.message || msg; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
+  const json = await res.json();
+  const text = json.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+  if (!text) throw new Error('Empty response from the model.');
+  return text;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   4 · CHAT UI
+   ════════════════════════════════════════════════════════════════════════ */
+const chatScroll = document.getElementById('chat-scroll');
+const chatForm   = document.getElementById('chat-form');
+const chatInput  = document.getElementById('chat-input');
+const chatSend   = document.getElementById('chat-send');
+const chipsRow   = document.getElementById('chips');
+let sending = false;
+
+const escapeHTML = s => s.replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* minimal, safe markdown: bold / italic / inline code / bullets */
+function md(s) {
+  return escapeHTML(s)
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|\s)\*([^*\n]+)\*(?=\s|$|[.,!?])/g, '$1<i>$2</i>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/^[-•] (.+)$/gm, '• $1');
+}
+
+function bubbleEl(msg) {
+  const div = document.createElement('div');
+  div.className = 'bubble msg-in ' +
+    (msg.role === 'user' ? 'bubble-user' : msg.role === 'error' ? 'bubble-err' : 'bubble-ai');
+  div.innerHTML = md(msg.text);
+  return div;
+}
+
+function renderChat() {
+  chatScroll.innerHTML = '';
+  if (chat.length === 0) {
+    const hello = document.createElement('div');
+    hello.className = 'mx-auto max-w-[300px] py-10 text-center';
+    hello.innerHTML = `
+      <div class="mb-3 text-4xl">🥗</div>
+      <p class="text-[15px] font-semibold">Hi${settings.name ? ' ' + escapeHTML(settings.name) : ''}! I'm your AI diet coach.</p>
+      <p class="mt-1 text-[13px] leading-relaxed text-mute">
+        Tell me what you ate, your weight, or how much water you drank —
+        I'll log everything to your dashboard automatically.
+      </p>`;
+    chatScroll.appendChild(hello);
+  } else {
+    chat.forEach(m => chatScroll.appendChild(bubbleEl(m)));
+  }
+  scrollChat();
+}
+
+function scrollChat() { requestAnimationFrame(() => { chatScroll.scrollTop = chatScroll.scrollHeight; }); }
+
+function showTyping() {
+  const el = document.createElement('div');
+  el.id = 'typing';
+  el.className = 'bubble bubble-ai msg-in flex items-center gap-1.5';
+  el.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  chatScroll.appendChild(el);
+  scrollChat();
+}
+const hideTyping = () => document.getElementById('typing')?.remove();
+
+function renderChips() {
+  const suggestions = [
+    'I weigh 78.5 kg today',
+    'I had oats with banana for breakfast',
+    'Drank 500 ml of water',
+    'Plan me a 1800 kcal day',
+  ];
+  chipsRow.innerHTML = '';
+  if (chat.length > 0) return;
+  suggestions.forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'shrink-0 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-ink2 active:bg-raise';
+    b.textContent = s;
+    b.onclick = () => { chatInput.value = s; chatInput.focus(); autoGrow(); };
+    chipsRow.appendChild(b);
+  });
+}
+
+function autoGrow() {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 128) + 'px';
+}
+chatInput.addEventListener('input', autoGrow);
+chatInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatForm.requestSubmit(); }
+});
+
+chatForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = chatInput.value.trim();
+  if (!text || sending) return;
+  if (!settings.apiKey) { openSettings(); toast('Add your Gemini API key first'); return; }
+
+  chatInput.value = ''; autoGrow();
+  chat.push({ role: 'user', text, ts: Date.now() });
+  persistChat(); renderChips();
+  chatScroll.appendChild(bubbleEl(chat[chat.length - 1]));
+  if (chat.length === 1) renderChat(); // clear the welcome card
+  scrollChat();
+
+  sending = true; chatSend.disabled = true;
+  showTyping();
+  try {
+    // send the last 30 turns of real conversation (user/model only)
+    const history = chat.filter(m => m.role === 'user' || m.role === 'model').slice(-30);
+    const raw = await callGemini(history);
+    const { text: visible } = processDataBlocks(raw);
+    hideTyping();
+    const msg = { role: 'model', text: visible || '👍 Logged!', ts: Date.now() };
+    chat.push(msg); persistChat();
+    chatScroll.appendChild(bubbleEl(msg));
+  } catch (err) {
+    hideTyping();
+    const msg = { role: 'error', text: `⚠️ ${err.message}`, ts: Date.now() };
+    chat.push(msg); persistChat();
+    chatScroll.appendChild(bubbleEl(msg));
+  } finally {
+    sending = false; chatSend.disabled = false;
+    scrollChat();
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   5 · DASHBOARD  — KPIs + Chart.js trends
+   ════════════════════════════════════════════════════════════════════════ */
+Chart.defaults.color = '#898781';
+Chart.defaults.borderColor = '#2c2c2a';
+Chart.defaults.font.family = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+Chart.defaults.font.size = 11;
+
+const tooltipStyle = {
+  backgroundColor: '#232322',
+  borderColor: 'rgba(255,255,255,0.10)',
+  borderWidth: 1,
+  titleColor: '#ffffff',
+  bodyColor: '#c3c2b7',
+  padding: 10,
+  cornerRadius: 10,
+  displayColors: false,
+};
+
+let weightChart = null, kcalChart = null;
+
+function weightSeries() {
+  return sortedDayKeys()
+    .filter(k => days[k].weight != null)
+    .slice(-30)
+    .map(k => ({ label: fmtDay(k), value: days[k].weight }));
+}
+
+function kcalSeries() {
+  const out = [];
+  const now = new Date();
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now); d.setDate(now.getDate() - i);
+    const k = todayKey(d);
+    out.push({ label: fmtDay(k, { day: 'numeric' }), value: days[k]?.calories_consumed ?? null });
+  }
+  return out;
+}
+
+function buildCharts() {
+  weightChart = new Chart(document.getElementById('chart-weight'), {
+    type: 'line',
+    data: { labels: [], datasets: [{
+      data: [],
+      borderColor: '#199e70',
+      backgroundColor: 'rgba(25,158,112,0.10)',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 6,
+      pointBackgroundColor: '#199e70',
+      pointBorderColor: '#1a1a19',
+      pointBorderWidth: 2,
+      tension: 0.35,
+      fill: true,
+      spanGaps: true,
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ...tooltipStyle, callbacks: { label: c => ` ${c.parsed.y} kg` } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0 } },
+        y: { grid: { color: '#2c2c2a' }, border: { display: false },
+             ticks: { maxTicksLimit: 5, callback: v => v + ' kg' } },
+      },
+    },
+  });
+
+  kcalChart = new Chart(document.getElementById('chart-kcal'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{
+      data: [],
+      backgroundColor: '#c98500',
+      hoverBackgroundColor: '#eda100',
+      borderRadius: { topLeft: 4, topRight: 4 },
+      borderSkipped: 'bottom',
+      maxBarThickness: 16,
+      categoryPercentage: 0.7,
+      barPercentage: 0.9,
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { ...tooltipStyle, callbacks: { label: c => ` ${c.parsed.y} kcal` } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 7, maxRotation: 0 } },
+        y: { beginAtZero: true, grid: { color: '#2c2c2a' }, border: { display: false },
+             ticks: { maxTicksLimit: 5 } },
+      },
+    },
+  });
+}
+
+function renderDashboard() {
+  const t = days[todayKey()] || {};
+
+  /* greeting + date */
+  const h = new Date().getHours();
+  const part = h < 5 ? 'night' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  document.getElementById('dash-greet').textContent =
+    `Good ${part}${settings.name ? ', ' + settings.name : ''}`;
+  document.getElementById('dash-date').textContent =
+    new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+  /* calories KPI */
+  const kcal = t.calories_consumed ?? 0;
+  const kGoal = settings.calorieGoal || 2000;
+  const kPct = Math.min(100, Math.round((kcal / kGoal) * 100));
+  document.getElementById('kpi-kcal').textContent = kcal.toLocaleString();
+  document.getElementById('bar-kcal').style.width = kPct + '%';
+  document.getElementById('bar-kcal').classList.toggle('!bg-crit', kcal > kGoal);
+  document.getElementById('kpi-kcal-sub').textContent =
+    kcal > kGoal ? `${(kcal - kGoal).toLocaleString()} kcal over your ${kGoal.toLocaleString()} goal`
+                 : `${(kGoal - kcal).toLocaleString()} kcal left of ${kGoal.toLocaleString()}`;
+  document.getElementById('kcal-chart-sub').textContent = `goal ${kGoal.toLocaleString()} kcal`;
+
+  /* weight KPI — latest known weigh-in */
+  const wKeys = sortedDayKeys().filter(k => days[k].weight != null);
+  const wEl = document.getElementById('kpi-weight');
+  const wSub = document.getElementById('kpi-weight-sub');
+  if (wKeys.length) {
+    const latest = days[wKeys[wKeys.length - 1]].weight;
+    wEl.textContent = latest;
+    if (settings.targetWeight) {
+      const diff = +(latest - settings.targetWeight).toFixed(1);
+      wSub.textContent = diff === 0 ? '🎉 at your target!'
+        : diff > 0 ? `${diff} kg above target` : `${Math.abs(diff)} kg below target`;
+    } else if (wKeys.length > 1) {
+      const prev = days[wKeys[wKeys.length - 2]].weight;
+      const d = +(latest - prev).toFixed(1);
+      wSub.textContent = d === 0 ? 'unchanged since last log' : `${d > 0 ? '+' : ''}${d} kg since last log`;
+    } else wSub.textContent = 'first weigh-in logged';
+  } else { wEl.textContent = '–'; wSub.textContent = 'no weigh-in yet'; }
+
+  /* water KPI */
+  const water = t.water_intake_ml ?? 0;
+  const wGoal = settings.waterGoal || 2500;
+  document.getElementById('kpi-water').textContent = water.toLocaleString();
+  document.getElementById('bar-water').style.width = Math.min(100, Math.round((water / wGoal) * 100)) + '%';
+  document.getElementById('kpi-water-sub').textContent =
+    water >= wGoal ? '💪 goal reached!' : `of ${wGoal.toLocaleString()} ml goal`;
+
+  /* charts */
+  if (!weightChart) buildCharts();
+
+  const ws = weightSeries();
+  document.getElementById('weight-empty').classList.toggle('hidden', ws.length > 0);
+  document.getElementById('chart-weight').parentElement.classList.toggle('hidden', ws.length === 0);
+  weightChart.data.labels = ws.map(p => p.label);
+  weightChart.data.datasets[0].data = ws.map(p => p.value);
+  weightChart.update('none');
+
+  const ks = kcalSeries();
+  const hasKcal = ks.some(p => p.value != null);
+  document.getElementById('kcal-empty').classList.toggle('hidden', hasKcal);
+  document.getElementById('chart-kcal').parentElement.classList.toggle('hidden', !hasKcal);
+  kcalChart.data.labels = ks.map(p => p.label);
+  kcalChart.data.datasets[0].data = ks.map(p => p.value);
+  kcalChart.update('none');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   6 · METRICS & HISTORY
+   ════════════════════════════════════════════════════════════════════════ */
+const metricsForm = document.getElementById('metrics-form');
+const mFields = {
+  weight: 'm-weight', calories_consumed: 'm-kcal', water_intake_ml: 'm-water',
+  waist: 'm-waist', hips: 'm-hips', chest: 'm-chest',
+  arm: 'm-arm', thigh: 'm-thigh', neck: 'm-neck',
+};
+const MEAS_LABELS = { waist: 'Waist', hips: 'Hips', chest: 'Chest', arm: 'Arm', thigh: 'Thigh', neck: 'Neck', body_fat: 'Body fat %' };
+
+function fillMetricsForm(dateKey) {
+  document.getElementById('m-date').value = dateKey;
+  const d = days[dateKey] || {};
+  for (const [field, id] of Object.entries(mFields)) {
+    document.getElementById(id).value = d[field] ?? '';
+  }
+  document.getElementById('m-notes').value = d.notes ?? '';
+}
+
+metricsForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const dateKey = document.getElementById('m-date').value || todayKey();
+  const patch = {};
+  for (const [field, id] of Object.entries(mFields)) {
+    const v = document.getElementById(id).value;
+    if (v !== '') patch[field] = v;
+  }
+  const notes = document.getElementById('m-notes').value.trim();
+  // manual edits replace notes rather than appending
+  const day = days[dateKey] || {};
+  if (notes) day.notes = notes; else delete day.notes;
+  days[dateKey] = day; persistDays();
+  mergeDay(dateKey, patch);
+  if (Object.keys(days[dateKey]).length === 0) delete days[dateKey];
+  persistDays();
+  renderDashboard(); renderMetrics();
+  toast('Entry saved');
+});
+
+function renderMetrics() {
+  /* latest measurements summary */
+  const keysDesc = sortedDayKeys().reverse();
+  const grid = document.getElementById('meas-grid');
+  grid.innerHTML = '';
+  let any = false;
+  for (const [field, label] of Object.entries(MEAS_LABELS)) {
+    const k = keysDesc.find(k => days[k][field] != null);
+    if (!k) continue;
+    any = true;
+    const cell = document.createElement('div');
+    cell.className = 'rounded-xl bg-raise p-2.5';
+    cell.innerHTML = `
+      <p class="text-[10px] uppercase tracking-wide text-mute">${label}</p>
+      <p class="text-lg font-bold [font-variant-numeric:tabular-nums]">${days[k][field]}<span class="text-[10px] font-medium text-mute"> ${field === 'body_fat' ? '%' : 'cm'}</span></p>
+      <p class="text-[10px] text-mute">${fmtDay(k)}</p>`;
+    grid.appendChild(cell);
+  }
+  document.getElementById('meas-summary').classList.toggle('hidden', !any);
+
+  /* history table */
+  const body = document.getElementById('hist-body');
+  body.innerHTML = '';
+  const hasRows = keysDesc.length > 0;
+  document.getElementById('hist-empty').classList.toggle('hidden', hasRows);
+  document.getElementById('hist-table').classList.toggle('hidden', !hasRows);
+
+  keysDesc.slice(0, 60).forEach(k => {
+    const d = days[k];
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-hair last:border-0';
+    const cell = v => v != null ? v : '<span class="text-mute">–</span>';
+    tr.innerHTML = `
+      <td class="py-2.5 pr-2 font-medium text-ink2">${fmtDay(k, { month: 'short', day: 'numeric', year: '2-digit' })}</td>
+      <td class="py-2.5 pr-2">${cell(d.weight)}</td>
+      <td class="py-2.5 pr-2">${cell(d.calories_consumed?.toLocaleString())}</td>
+      <td class="py-2.5 pr-2">${cell(d.water_intake_ml?.toLocaleString())}</td>
+      <td class="py-2.5 pr-2">${cell(d.waist)}</td>
+      <td class="py-2.5 text-right whitespace-nowrap">
+        <button class="rounded-lg px-2 py-1 text-[12px] font-medium text-brand active:bg-brand/10" data-edit="${k}">Edit</button>
+        <button class="rounded-lg px-2 py-1 text-[12px] font-medium text-crit active:bg-crit/10" data-del="${k}">Del</button>
+      </td>`;
+    body.appendChild(tr);
+  });
+}
+
+document.getElementById('hist-body').addEventListener('click', e => {
+  const editKey = e.target.dataset?.edit;
+  const delKey = e.target.dataset?.del;
+  if (editKey) {
+    fillMetricsForm(editKey);
+    metricsForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (delKey) {
+    if (confirm(`Delete the entry for ${fmtDay(delKey, { month: 'long', day: 'numeric', year: 'numeric' })}?`)) {
+      delete days[delKey]; persistDays();
+      renderDashboard(); renderMetrics();
+      toast('Entry deleted');
+    }
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   7 · NAVIGATION
+   ════════════════════════════════════════════════════════════════════════ */
+const tabs = ['chat', 'dashboard', 'metrics'];
+function showTab(name) {
+  tabs.forEach(t => {
+    document.getElementById('screen-' + t).classList.toggle('active', t === name);
+  });
+  document.querySelectorAll('.nav-btn').forEach(b => {
+    const active = b.dataset.tab === name;
+    b.classList.toggle('text-brand', active);
+    b.classList.toggle('text-mute', !active);
+  });
+  if (name === 'dashboard') renderDashboard();
+  if (name === 'metrics') renderMetrics();
+  if (name === 'chat') scrollChat();
+}
+document.querySelectorAll('.nav-btn').forEach(b =>
+  b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+/* ════════════════════════════════════════════════════════════════════════
+   8 · SETTINGS MODAL
+   ════════════════════════════════════════════════════════════════════════ */
+const settingsModal = document.getElementById('modal-settings');
+
+function openSettings() {
+  document.getElementById('s-apikey').value = settings.apiKey;
+  document.getElementById('s-model').value = settings.model;
+  document.getElementById('s-name').value = settings.name;
+  document.getElementById('s-kcal').value = settings.calorieGoal || '';
+  document.getElementById('s-water').value = settings.waterGoal || '';
+  document.getElementById('s-target').value = settings.targetWeight ?? '';
+  settingsModal.classList.add('open');
+}
+function closeSettings() { settingsModal.classList.remove('open'); }
+settingsModal.addEventListener('click', e => { if (e.target === settingsModal) closeSettings(); });
+document.getElementById('btn-settings').addEventListener('click', openSettings);
+
+document.getElementById('s-apikey-toggle').addEventListener('click', () => {
+  const inp = document.getElementById('s-apikey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+
+function saveSettings() {
+  settings.apiKey = document.getElementById('s-apikey').value.trim();
+  settings.model = document.getElementById('s-model').value;
+  settings.name = document.getElementById('s-name').value.trim();
+  settings.calorieGoal = Number(document.getElementById('s-kcal').value) || 2000;
+  settings.waterGoal = Number(document.getElementById('s-water').value) || 2500;
+  const tw = document.getElementById('s-target').value;
+  settings.targetWeight = tw === '' ? null : Number(tw);
+  persistSettings();
+  closeSettings();
+  updateKeyBanner();
+  renderDashboard(); renderChat(); renderChips();
+  toast('Settings saved');
+}
+
+function updateKeyBanner() {
+  document.getElementById('key-banner').classList.toggle('hidden', !!settings.apiKey);
+  document.getElementById('header-sub').textContent =
+    settings.apiKey ? `AI Diet Coach · ${settings.model}` : 'AI Diet Coach';
+}
+
+function exportData() {
+  const blob = new Blob(
+    [JSON.stringify({ exportedAt: new Date().toISOString(), settings: { ...settings, apiKey: '***' }, days, chat }, null, 2)],
+    { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `dietrack-export-${todayKey()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function clearChat() {
+  if (!confirm('Clear the whole chat history?')) return;
+  chat = []; persistChat();
+  renderChat(); renderChips();
+  toast('Chat cleared');
+}
+
+function eraseAll() {
+  if (!confirm('Erase ALL data — settings, history and chat? This cannot be undone.')) return;
+  Object.values(LS).forEach(k => localStorage.removeItem(k));
+  location.reload();
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   9 · TOAST + INIT
+   ════════════════════════════════════════════════════════════════════════ */
+let toastTimer = null;
+function toast(text) {
+  document.getElementById('toast-text').textContent = text;
+  const el = document.getElementById('toast');
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+(function init() {
+  fillMetricsForm(todayKey());
+  updateKeyBanner();
+  renderChat();
+  renderChips();
+  renderMetrics();
+  renderDashboard();
+})();
+</script>
+</body>
+</html>

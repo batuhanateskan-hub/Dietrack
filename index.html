@@ -582,7 +582,7 @@ Context:
 ${recent || '- none yet'}`;
 }
 
-const GROQ_ENDPOINT = 'https://api.groq.com/v1/chat/completions';
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 
 async function callGroq(history) {
   // Standard OpenAI-compatible chat payload: the coach rules ride natively

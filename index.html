@@ -512,24 +512,29 @@ function mergeDay(dateKey, patch) {
 /* ════════════════════════════════════════════════════════════════════════
    2 · DATA EXTRACTION ENGINE  — pull :::data … ::: blocks out of AI replies
    ════════════════════════════════════════════════════════════════════════ */
-const DATA_BLOCK_RE = /:{3}\s*data\s*([\s\S]*?):{3}/gi;
+/* Flexible parser: captures the JSON payload whether the model wrapped it
+   in ':::data … :::' or a bare '::: … :::' block. */
+const DATA_BLOCK_RE = /:::\s*(?:data\s*)?(\{[\s\S]*?\})\s*:::/gi;
+
+/* Some models additionally wrap the JSON in a markdown code fence inside the
+   block; unwrap those first so DATA_BLOCK_RE sees a bare {…} object. */
+const FENCED_BLOCK_RE = /:::\s*(?:data\s*)?```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*:::/gi;
 
 /**
- * Scans an AI reply for :::data … ::: wrapper blocks.
+ * Scans an AI reply for :::data … ::: (or bare ::: … :::) wrapper blocks.
  * Every block found is parsed, merged into today's record, and stripped
- * from the visible text — the automation stays invisible in the chat UI.
+ * from the visible text — the user never sees raw JSON in the chat UI.
  * Returns { text, extracted }.
  */
 function processDataBlocks(raw) {
   let extracted = false;
-  const text = raw.replace(DATA_BLOCK_RE, (_match, payload) => {
-    // Tolerate models that wrap the JSON in a markdown code fence.
-    const cleaned = payload.replace(/```(?:json)?/gi, '').trim();
+  const normalized = raw.replace(FENCED_BLOCK_RE, ':::data\n$1\n:::');
+  const text = normalized.replace(DATA_BLOCK_RE, (_match, payload) => {
     try {
-      const data = JSON.parse(cleaned);
+      const data = JSON.parse(payload.trim());
       if (data && typeof data === 'object' && mergeDay(todayKey(), data)) extracted = true;
     } catch (err) {
-      console.warn('DieTrack: could not parse :::data block', err, cleaned);
+      console.warn('DieTrack: could not parse :::data block', err, payload);
     }
     return ''; // strip the block from the rendered message
   }).replace(/\n{3,}/g, '\n\n').trim();
@@ -722,8 +727,9 @@ chatForm.addEventListener('submit', async e => {
   sending = true; chatSend.disabled = true;
   showTyping();
   try {
-    // send the last 30 turns of real conversation (user/model only)
-    const history = chat.filter(m => m.role === 'user' || m.role === 'model').slice(-30);
+    // Groq free-tier TPM guard: send only the system prompt plus the LAST 6
+    // conversation messages (user/model only) — never the whole history.
+    const history = chat.filter(m => m.role === 'user' || m.role === 'model').slice(-6);
     const raw = await callGroq(history);
     const { text: visible } = processDataBlocks(raw);
     hideTyping();

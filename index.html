@@ -521,9 +521,25 @@ const DATA_BLOCK_RE = /:::\s*(?:data\s*)?(\{[\s\S]*?\})\s*:::/gi;
 const FENCED_BLOCK_RE = /:::\s*(?:data\s*)?```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*:::/gi;
 
 /**
+ * Resolves the "date" field of an extracted payload to the day key the
+ * metrics are stored under. Accepts a real, strictly-formatted YYYY-MM-DD
+ * date no later than today; anything missing or invalid falls back to today.
+ */
+function resolveDataDate(dateStr) {
+  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const real = dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+    if (real && dateStr <= todayKey()) return dateStr;
+  }
+  return todayKey();
+}
+
+/**
  * Scans an AI reply for :::data … ::: (or bare ::: … :::) wrapper blocks.
- * Every block found is parsed, merged into today's record, and stripped
- * from the visible text — the user never sees raw JSON in the chat UI.
+ * Every block found is parsed, merged into the record for the payload's
+ * "date" (today when absent/invalid), and stripped from the visible text —
+ * the user never sees raw JSON in the chat UI.
  * Returns { text, extracted }.
  */
 function processDataBlocks(raw) {
@@ -532,7 +548,7 @@ function processDataBlocks(raw) {
   const text = normalized.replace(DATA_BLOCK_RE, (_match, payload) => {
     try {
       const data = JSON.parse(payload.trim());
-      if (data && typeof data === 'object' && mergeDay(todayKey(), data)) extracted = true;
+      if (data && typeof data === 'object' && mergeDay(resolveDataDate(data.date), data)) extracted = true;
     } catch (err) {
       console.warn('DieTrack: could not parse :::data block', err, payload);
     }
@@ -565,6 +581,7 @@ function buildSystemPrompt() {
   return `You are an elite AI Diet Coach. Converse naturally with the user: be warm, motivating, concise, and practical. Give evidence-based nutrition and training guidance, estimate calories for described meals, and celebrate progress. However, whenever the user provides daily data (such as weight, calories consumed, water intake, or body metrics), you must append a structured JSON object at the very end of your response inside a custom wrapper block exactly like this:
 :::data
 {
+  "date": "${todayKey()}",
   "weight": 78.5,
   "calories_consumed": 1450,
   "water_intake_ml": 2500,
@@ -573,8 +590,9 @@ function buildSystemPrompt() {
 :::
 
 Rules for the data block:
-- Include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
-- calories_consumed and water_intake_ml must always be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal or drink, ADD it to the current total and output the new total.
+- Every data block MUST include a "date" field in strict YYYY-MM-DD format. Today's date is ${todayKey()}. Data belongs to today unless the user says otherwise — if the user provides data for a previous day (like "yesterday", "two days ago", "last Monday", or a specific date), calculate that exact date from today's date and output it in the JSON.
+- Besides "date", include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
+- For TODAY's data, calories_consumed and water_intake_ml must be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal or drink, ADD it to the current total and output the new total. For a PAST day, output the totals the user reports for that day as-is.
 - Estimate calories for described meals yourself when the user doesn't give a number.
 - Output the block exactly once, at the very end, with valid JSON and no markdown fences inside it. Never mention the block or the JSON to the user — it is invisible plumbing.
 - If the message contains no loggable data, do NOT output a data block at all.

@@ -166,11 +166,23 @@
           <p id="dash-date" class="text-[13px] text-mute"></p>
         </div>
 
-        <!-- KPI: Calories -->
+        <!-- Diet day + streak badges -->
+        <div id="badge-row" class="hidden flex-wrap gap-2">
+          <span id="badge-day"
+                class="inline-flex items-center gap-1.5 rounded-full border border-white/[0.06] bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink2">
+            📅 <span id="badge-day-text">Day 1 of Diet</span>
+          </span>
+          <span id="badge-streak"
+                class="inline-flex items-center gap-1.5 rounded-full border border-kcal/25 bg-kcal/10 px-3 py-1.5 text-[12px] font-semibold text-[#f0c674]">
+            🔥 <span id="badge-streak-text">Mevcut Seri: 0 Gün</span>
+          </span>
+        </div>
+
+        <!-- KPI: Net Calories -->
         <div class="rounded-2xl border border-white/[0.06] bg-surface p-4">
           <div class="mb-2 flex items-start justify-between">
             <div>
-              <p class="text-[12px] font-medium uppercase tracking-wider text-mute">Today's Calories</p>
+              <p class="text-[12px] font-medium uppercase tracking-wider text-mute">Today's Net Calories</p>
               <p class="mt-1 text-3xl font-bold tracking-tight">
                 <span id="kpi-kcal">–</span><span class="ml-1 text-sm font-medium text-mute">kcal</span>
               </p>
@@ -259,18 +271,22 @@
             <input type="date" id="m-date" class="field !w-auto !py-1.5 text-[13px]" required />
           </div>
 
-          <div class="grid grid-cols-3 gap-2">
+          <div class="grid grid-cols-2 gap-2">
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Weight kg</span>
               <input type="number" step="0.1" min="0" id="m-weight" class="field" placeholder="78.5" inputmode="decimal" />
             </label>
             <label class="block">
-              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Kcal</span>
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Water ml</span>
+              <input type="number" step="50" min="0" id="m-water" class="field" placeholder="2000" inputmode="numeric" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Kcal eaten</span>
               <input type="number" step="1" min="0" id="m-kcal" class="field" placeholder="1800" inputmode="numeric" />
             </label>
             <label class="block">
-              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Water ml</span>
-              <input type="number" step="50" min="0" id="m-water" class="field" placeholder="2000" inputmode="numeric" />
+              <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-mute">Kcal burned</span>
+              <input type="number" step="1" min="0" id="m-burned" class="field" placeholder="300" inputmode="numeric" />
             </label>
           </div>
 
@@ -306,12 +322,13 @@
           <h3 class="mb-2 text-[15px] font-semibold">History</h3>
           <p id="hist-empty" class="py-4 text-center text-[13px] text-mute">Nothing logged yet.</p>
           <div class="overflow-x-auto">
-            <table id="hist-table" class="hidden w-full min-w-[440px] text-left text-[13px] [font-variant-numeric:tabular-nums]">
+            <table id="hist-table" class="hidden w-full min-w-[500px] text-left text-[13px] [font-variant-numeric:tabular-nums]">
               <thead>
                 <tr class="border-b border-line text-[11px] uppercase tracking-wide text-mute">
                   <th class="py-2 pr-2 font-medium">Date</th>
                   <th class="py-2 pr-2 font-medium">Kg</th>
                   <th class="py-2 pr-2 font-medium">Kcal</th>
+                  <th class="py-2 pr-2 font-medium">Burn</th>
                   <th class="py-2 pr-2 font-medium">Water</th>
                   <th class="py-2 pr-2 font-medium">Waist</th>
                   <th class="py-2 font-medium"></th>
@@ -441,7 +458,8 @@
 /* ════════════════════════════════════════════════════════════════════════
    1 · STORAGE LAYER  — everything persists in LocalStorage
    ════════════════════════════════════════════════════════════════════════ */
-const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietrack_chat' };
+const LS = { settings: 'dietrack_settings', days: 'dietrack_days', chat: 'dietrack_chat',
+             dietStart: 'dietrack_diet_start_date' };
 
 const DEFAULT_SETTINGS = {
   apiKey: '', model: 'llama-3.1-8b-instant', name: '',
@@ -486,9 +504,67 @@ function fmtDay(key, opts = { month: 'short', day: 'numeric' }) {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, opts);
 }
 const sortedDayKeys = () => Object.keys(days).sort();
+const keyToDate = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+
+/* ── Net calories: consumed − burned (floored at 0 for display) ─────────── */
+const hasCalData = d => d && (d.calories_consumed != null || d.calories_burned != null);
+const netCalories = d => hasCalData(d)
+  ? Math.max(0, (d.calories_consumed ?? 0) - (d.calories_burned ?? 0)) : 0;
+
+/* ── Diet start date ────────────────────────────────────────────────────────
+   Stored once in LocalStorage; when absent it is set to the date of the very
+   first recorded entry. If a back-dated entry later appears before the stored
+   start, the start moves back to keep "Day X" honest. Null until any data. */
+function dietStartKey() {
+  let start = localStorage.getItem(LS.dietStart) || null;
+  const first = sortedDayKeys()[0] || null;
+  if (first && (!start || first < start)) {
+    start = first;
+    localStorage.setItem(LS.dietStart, start);
+  }
+  return start;
+}
+
+/* Day number of the diet (start day = Day 1). */
+function dietDayNumber() {
+  const start = dietStartKey();
+  if (!start) return 0;
+  const diff = Math.round((keyToDate(todayKey()) - keyToDate(start)) / 86400000);
+  return diff + 1;
+}
+
+/* ── Smart streak with a rolling 7-day cheat-day exception ──────────────────
+   Days are grouped into fixed 7-day blocks anchored at the diet start
+   (days 1-7, 8-14, …). A day passes when its NET calories stay at or under
+   the daily goal; a day with no calorie data counts as a pass. The FIRST
+   over-limit day in a block is a "cheat day": it neither resets nor extends
+   the streak. A SECOND over-limit day in the same block resets the streak
+   to 0 on that day. Pure read-only computation — never mutates records. */
+function computeStreak() {
+  const start = dietStartKey();
+  if (!start) return 0;
+  const goal = settings.calorieGoal || 2000;
+  const end = todayKey();
+  let streak = 0, blockIndex = -1, blockViolations = 0;
+  const cursor = keyToDate(start);
+  for (let offset = 0, k = todayKey(cursor); k <= end;
+       cursor.setDate(cursor.getDate() + 1), offset++, k = todayKey(cursor)) {
+    const bi = Math.floor(offset / 7);
+    if (bi !== blockIndex) { blockIndex = bi; blockViolations = 0; }
+    const d = days[k];
+    const over = hasCalData(d) && ((d.calories_consumed ?? 0) - (d.calories_burned ?? 0)) > goal;
+    if (over) {
+      blockViolations++;
+      if (blockViolations >= 2) streak = 0; // second offence in the block: reset
+      continue;                             // cheat day: streak survives but doesn't grow
+    }
+    streak++;
+  }
+  return streak;
+}
 
 /* merge a partial record into one day */
-const NUM_FIELDS = ['weight', 'calories_consumed', 'water_intake_ml',
+const NUM_FIELDS = ['weight', 'calories_consumed', 'calories_burned', 'water_intake_ml',
                     'waist', 'hips', 'chest', 'arm', 'thigh', 'neck', 'body_fat'];
 
 function mergeDay(dateKey, patch) {
@@ -572,7 +648,8 @@ function buildSystemPrompt() {
     const d = days[k];
     const parts = [];
     if (d.weight != null) parts.push(`weight ${d.weight}kg`);
-    if (d.calories_consumed != null) parts.push(`${d.calories_consumed}kcal`);
+    if (d.calories_consumed != null) parts.push(`${d.calories_consumed}kcal eaten`);
+    if (d.calories_burned != null) parts.push(`${d.calories_burned}kcal burned`);
     if (d.water_intake_ml != null) parts.push(`${d.water_intake_ml}ml water`);
     if (d.waist != null) parts.push(`waist ${d.waist}cm`);
     return `- ${k}: ${parts.join(', ') || 'no data'}`;
@@ -584,6 +661,7 @@ function buildSystemPrompt() {
   "date": "${todayKey()}",
   "weight": 78.5,
   "calories_consumed": 1450,
+  "calories_burned": 350,
   "water_intake_ml": 2500,
   "notes": "User reported minor bloating but high energy."
 }
@@ -591,16 +669,18 @@ function buildSystemPrompt() {
 
 Rules for the data block:
 - Every data block MUST include a "date" field in strict YYYY-MM-DD format. Today's date is ${todayKey()}. Data belongs to today unless the user says otherwise — if the user provides data for a previous day (like "yesterday", "two days ago", "last Monday", or a specific date), calculate that exact date from today's date and output it in the JSON.
-- Besides "date", include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
-- For TODAY's data, calories_consumed and water_intake_ml must be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal or drink, ADD it to the current total and output the new total. For a PAST day, output the totals the user reports for that day as-is.
+- Besides "date", include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), calories_burned (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
+- Listen for workouts, sports, and exercise logs (e.g. "I ran for 30 mins and burned 300 kcal") and populate calories_burned with the day's total active/exercise kcal. Estimate the burn yourself from the activity, duration, and the user's weight when they don't give a number.
+- For TODAY's data, calories_consumed, calories_burned and water_intake_ml must be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal, workout, or drink, ADD it to the current total and output the new total. For a PAST day, output the totals the user reports for that day as-is.
 - Estimate calories for described meals yourself when the user doesn't give a number.
+- The app scores each day by NET calories (calories_consumed − calories_burned) against the daily goal — exercise offsets food, so coach the user accordingly.
 - Output the block exactly once, at the very end, with valid JSON and no markdown fences inside it. Never mention the block or the JSON to the user — it is invisible plumbing.
 - If the message contains no loggable data, do NOT output a data block at all.
 
 Context:
 - Today's date: ${todayKey()}${settings.name ? `\n- User's name: ${settings.name}` : ''}
 - Daily goals: ${settings.calorieGoal} kcal, ${settings.waterGoal} ml water${settings.targetWeight ? `, target weight ${settings.targetWeight} kg` : ''}
-- Today so far: calories ${t.calories_consumed ?? 0} kcal, water ${t.water_intake_ml ?? 0} ml${t.weight != null ? `, weight ${t.weight} kg` : ''}
+- Today so far: ${t.calories_consumed ?? 0} kcal eaten, ${t.calories_burned ?? 0} kcal burned, water ${t.water_intake_ml ?? 0} ml${t.weight != null ? `, weight ${t.weight} kg` : ''}
 - Last 7 logged days:
 ${recent || '- none yet'}`;
 }
@@ -822,7 +902,7 @@ function kcalSeries() {
   const short = chartRange === 7 || chartRange === 14; // bare day numbers read fine within two weeks
   for (let k = todayKey(cursor); k <= end; cursor.setDate(cursor.getDate() + 1), k = todayKey(cursor)) {
     out.push({ label: fmtDay(k, short ? { day: 'numeric' } : { month: 'short', day: 'numeric' }),
-               value: days[k]?.calories_consumed ?? null });
+               value: hasCalData(days[k]) ? netCalories(days[k]) : null });
   }
   return out;
 }
@@ -875,7 +955,7 @@ function buildCharts() {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
-        tooltip: { ...tooltipStyle, callbacks: { label: c => ` ${c.parsed.y} kcal` } },
+        tooltip: { ...tooltipStyle, callbacks: { label: c => ` ${c.parsed.y} net kcal` } },
       },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 7, maxRotation: 0 } },
@@ -897,17 +977,29 @@ function renderDashboard() {
   document.getElementById('dash-date').textContent =
     new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
-  /* calories KPI */
-  const kcal = t.calories_consumed ?? 0;
+  /* diet day + streak badges */
+  const dayNo = dietDayNumber();
+  document.getElementById('badge-row').classList.toggle('hidden', dayNo === 0);
+  document.getElementById('badge-row').classList.toggle('flex', dayNo !== 0);
+  if (dayNo > 0) {
+    document.getElementById('badge-day-text').textContent = `Day ${dayNo} of Diet`;
+    document.getElementById('badge-streak-text').textContent = `Mevcut Seri: ${computeStreak()} Gün`;
+  }
+
+  /* net calories KPI: consumed − burned vs goal */
+  const eaten = t.calories_consumed ?? 0;
+  const burned = t.calories_burned ?? 0;
+  const net = netCalories(t);
   const kGoal = settings.calorieGoal || 2000;
-  const kPct = Math.min(100, Math.round((kcal / kGoal) * 100));
-  document.getElementById('kpi-kcal').textContent = kcal.toLocaleString();
+  const kPct = Math.min(100, Math.round((net / kGoal) * 100));
+  document.getElementById('kpi-kcal').textContent = net.toLocaleString();
   document.getElementById('bar-kcal').style.width = kPct + '%';
-  document.getElementById('bar-kcal').classList.toggle('!bg-crit', kcal > kGoal);
+  document.getElementById('bar-kcal').classList.toggle('!bg-crit', net > kGoal);
+  const burnNote = burned > 0 ? ` · ${eaten.toLocaleString()} in − ${burned.toLocaleString()} out` : '';
   document.getElementById('kpi-kcal-sub').textContent =
-    kcal > kGoal ? `${(kcal - kGoal).toLocaleString()} kcal over your ${kGoal.toLocaleString()} goal`
-                 : `${(kGoal - kcal).toLocaleString()} kcal left of ${kGoal.toLocaleString()}`;
-  document.getElementById('kcal-chart-sub').textContent = `goal ${kGoal.toLocaleString()} kcal`;
+    (net > kGoal ? `${(net - kGoal).toLocaleString()} net kcal over your ${kGoal.toLocaleString()} goal`
+                 : `${(kGoal - net).toLocaleString()} net kcal left of ${kGoal.toLocaleString()}`) + burnNote;
+  document.getElementById('kcal-chart-sub').textContent = `net kcal · goal ${kGoal.toLocaleString()}`;
 
   /* weight KPI — latest known weigh-in */
   const wKeys = sortedDayKeys().filter(k => days[k].weight != null);
@@ -983,7 +1075,8 @@ document.getElementById('range-selector').addEventListener('click', e => {
    ════════════════════════════════════════════════════════════════════════ */
 const metricsForm = document.getElementById('metrics-form');
 const mFields = {
-  weight: 'm-weight', calories_consumed: 'm-kcal', water_intake_ml: 'm-water',
+  weight: 'm-weight', calories_consumed: 'm-kcal', calories_burned: 'm-burned',
+  water_intake_ml: 'm-water',
   waist: 'm-waist', hips: 'm-hips', chest: 'm-chest',
   arm: 'm-arm', thigh: 'm-thigh', neck: 'm-neck',
 };
@@ -1054,6 +1147,7 @@ function renderMetrics() {
       <td class="py-2.5 pr-2 font-medium text-ink2">${fmtDay(k, { month: 'short', day: 'numeric', year: '2-digit' })}</td>
       <td class="py-2.5 pr-2">${cell(d.weight)}</td>
       <td class="py-2.5 pr-2">${cell(d.calories_consumed?.toLocaleString())}</td>
+      <td class="py-2.5 pr-2">${cell(d.calories_burned?.toLocaleString())}</td>
       <td class="py-2.5 pr-2">${cell(d.water_intake_ml?.toLocaleString())}</td>
       <td class="py-2.5 pr-2">${cell(d.waist)}</td>
       <td class="py-2.5 text-right whitespace-nowrap">

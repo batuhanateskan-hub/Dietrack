@@ -586,20 +586,34 @@ function computeStreak() {
      record is never wholesale-replaced.
    - Date not found       → a brand-new entry is created under that key.
    - persistDays() re-sorts chronologically on every save (see above).
-   Note: calories/water/burn REPLACE the stored value rather than accumulate,
-   because the AI is instructed to always output the day's updated RUNNING
-   TOTAL — accumulating here would double-count every meal. */
-const NUM_FIELDS = ['weight', 'calories_consumed', 'calories_burned', 'water_intake_ml',
-                    'waist', 'hips', 'chest', 'arm', 'thigh', 'neck', 'body_fat'];
 
-function mergeDay(dateKey, patch) {
+   Incremental Accumulation: the AI outputs ONLY the increment from the
+   current message (it cannot know daily totals — chat history is truncated
+   for rate limits), so AI payloads merge with { accumulate: true }:
+   calories eaten/burned and water ADD onto the day's existing value, while
+   weight and body measurements are single states that overwrite. Manual
+   Metrics-form saves merge with accumulate OFF: the form shows and edits the
+   day's actual totals, so re-saving must replace, never double. */
+const ACCUM_FIELDS = ['calories_consumed', 'calories_burned', 'water_intake_ml'];
+const STATE_FIELDS = ['weight', 'waist', 'hips', 'chest', 'arm', 'thigh', 'neck', 'body_fat'];
+
+function mergeDay(dateKey, patch, { accumulate = false } = {}) {
   const existing = days[dateKey];       // exact-date lookup — the findIndex() equivalent
   const day = existing || {};           // miss → brand-new entry for this date
   let changed = false;
-  for (const f of NUM_FIELDS) {
+  for (const f of ACCUM_FIELDS) {
     if (patch[f] !== undefined && patch[f] !== null && patch[f] !== '') {
       const n = Number(patch[f]);
-      if (Number.isFinite(n) && n >= 0) { day[f] = n; changed = true; }
+      if (Number.isFinite(n) && n >= 0) {
+        day[f] = accumulate ? (day[f] ?? 0) + n : n;
+        changed = true;
+      }
+    }
+  }
+  for (const f of STATE_FIELDS) {
+    if (patch[f] !== undefined && patch[f] !== null && patch[f] !== '') {
+      const n = Number(patch[f]);
+      if (Number.isFinite(n) && n > 0) { day[f] = n; changed = true; }
     }
   }
   if (typeof patch.notes === 'string' && patch.notes.trim()) {
@@ -650,7 +664,8 @@ function processDataBlocks(raw) {
   const text = normalized.replace(DATA_BLOCK_RE, (_match, payload) => {
     try {
       const data = JSON.parse(payload.trim());
-      if (data && typeof data === 'object' && mergeDay(resolveDataDate(data.date), data)) extracted = true;
+      if (data && typeof data === 'object'
+          && mergeDay(resolveDataDate(data.date), data, { accumulate: true })) extracted = true;
     } catch (err) {
       console.warn('DieTrack: could not parse :::data block', err, payload);
     }
@@ -686,20 +701,22 @@ function buildSystemPrompt() {
 {
   "date": "${todayKey()}",
   "weight": 78.5,
-  "calories_consumed": 1450,
-  "calories_burned": 350,
-  "water_intake_ml": 2500,
-  "notes": "User reported minor bloating but high energy."
+  "calories_consumed": 450,
+  "calories_burned": 300,
+  "water_intake_ml": 500,
+  "notes": "Post-lunch walk, feeling energetic."
 }
 :::
 
 Rules for the data block:
 - Every data block MUST include a "date" field in strict YYYY-MM-DD format. Today's date is ${todayKey()}. Data belongs to today unless the user says otherwise — if the user provides data for a previous day (like "yesterday", "two days ago", "last Monday", or a specific date), calculate that exact date from today's date and output it in the JSON.
+- INCREMENTAL ONLY: calories_consumed, calories_burned and water_intake_ml must reflect ONLY the specific foods, drinks, or activities mentioned in the CURRENT message. NEVER output daily cumulative totals in the JSON — the app accumulates increments itself, and you may not know the full day. Examples: "I just drank 500ml water" → {"water_intake_ml": 500}. "I played basketball and burned 300 kcal" → {"calories_burned": 300}. This applies to past days too.
+- weight and body measurements (waist, hips, chest, arm, thigh, neck, body_fat) are STATES, not increments — output the measured value itself.
 - Besides "date", include ONLY the keys the user actually provided or that you can confidently infer. Valid keys: weight (kg), calories_consumed (kcal), calories_burned (kcal), water_intake_ml (ml), waist, hips, chest, arm, thigh, neck (all cm), body_fat (%), notes (string).
-- Listen for workouts, sports, and exercise logs (e.g. "I ran for 30 mins and burned 300 kcal") and populate calories_burned with the day's total active/exercise kcal. Estimate the burn yourself from the activity, duration, and the user's weight when they don't give a number.
-- For TODAY's data, calories_consumed, calories_burned and water_intake_ml must be the user's UPDATED RUNNING TOTAL for today. Today's totals so far are given below — if the user reports an additional meal, workout, or drink, ADD it to the current total and output the new total. For a PAST day, output the totals the user reports for that day as-is.
-- Estimate calories for described meals yourself when the user doesn't give a number.
+- Listen for workouts, sports, and exercise logs and populate calories_burned with that activity's kcal. Estimate the burn yourself from the activity, duration, and the user's weight when they don't give a number.
+- Estimate calories for described meals yourself when the user doesn't give a number. Use REALISTIC estimations and do not underestimate — especially for Turkish foods: a tereyağlı simit is ~350-400 kcal per piece (butter and heavy sesame), a lahmacun ~300 kcal, an İskender portion ~750-900 kcal, baklava ~100-120 kcal per small piece.
 - The app scores each day by NET calories (calories_consumed − calories_burned) against the daily goal — exercise offsets food, so coach the user accordingly.
+- "Today so far" totals below are COACHING CONTEXT ONLY (e.g. to tell the user how much budget remains). Never copy those totals into the JSON — the JSON carries only the current message's increment.
 - Output the block exactly once, at the very end, with valid JSON and no markdown fences inside it. Never mention the block or the JSON to the user — it is invisible plumbing.
 - If the message contains no loggable data, do NOT output a data block at all.
 

@@ -491,13 +491,24 @@ let days     = loadJSON(LS.days, {});   // { 'YYYY-MM-DD': { weight, calories_co
 let chat     = loadJSON(LS.chat, []);   // [ { role: 'user'|'model'|'error', text, ts } ]
 
 const persistSettings = () => saveJSON(LS.settings, settings);
-const persistDays     = () => saveJSON(LS.days, days);
 const persistChat     = () => saveJSON(LS.chat, chat);
+
+/* Chronological sorting on every write: the day records are rebuilt in
+   ascending date-key order right before saving, so the stored JSON — and
+   every iteration over it — stays perfectly chronological even when a past
+   day is logged after a newer one. */
+function persistDays() {
+  const sorted = {};
+  for (const k of Object.keys(days).sort()) sorted[k] = days[k];
+  days = sorted;
+  saveJSON(LS.days, days);
+}
 
 /* ── date helpers (local time, not UTC) ─────────────────────────────────── */
 function todayKey(d = new Date()) {
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  // Safe local date anchoring: the 'sv-SE' locale formats as clean YYYY-MM-DD
+  // in the USER'S LOCAL timezone (never the UTC drift of toISOString()).
+  return d.toLocaleDateString('sv-SE');
 }
 function fmtDay(key, opts = { month: 'short', day: 'numeric' }) {
   const [y, m, d] = key.split('-').map(Number);
@@ -563,12 +574,27 @@ function computeStreak() {
   return streak;
 }
 
-/* merge a partial record into one day */
+/* ── Smart Merge by Date ────────────────────────────────────────────────────
+   'days' is a plain object keyed by the exact YYYY-MM-DD date string, so the
+   date IS the primary key. The lookup below is the strict equivalent of
+   dietHistory.findIndex(entry => entry.date === payload.date) on an array —
+   it either hits that exact day's record or nothing, so one day can never
+   shadow or overwrite a different day.
+
+   - Date already exists  → field-level merge: only fields present in the
+     payload are updated; every other field on the record survives. The
+     record is never wholesale-replaced.
+   - Date not found       → a brand-new entry is created under that key.
+   - persistDays() re-sorts chronologically on every save (see above).
+   Note: calories/water/burn REPLACE the stored value rather than accumulate,
+   because the AI is instructed to always output the day's updated RUNNING
+   TOTAL — accumulating here would double-count every meal. */
 const NUM_FIELDS = ['weight', 'calories_consumed', 'calories_burned', 'water_intake_ml',
                     'waist', 'hips', 'chest', 'arm', 'thigh', 'neck', 'body_fat'];
 
 function mergeDay(dateKey, patch) {
-  const day = days[dateKey] || {};
+  const existing = days[dateKey];       // exact-date lookup — the findIndex() equivalent
+  const day = existing || {};           // miss → brand-new entry for this date
   let changed = false;
   for (const f of NUM_FIELDS) {
     if (patch[f] !== undefined && patch[f] !== null && patch[f] !== '') {
@@ -632,8 +658,8 @@ function processDataBlocks(raw) {
   }).replace(/\n{3,}/g, '\n\n').trim();
 
   if (extracted) {
-    renderDashboard();
-    renderMetrics();
+    renderDashboard();  // re-filters both charts from the sorted store and chart.update()s them
+    renderMetrics();    // history table + measurement summary follow the same sorted order
     toast('Dashboard updated');
   }
   return { text, extracted };
